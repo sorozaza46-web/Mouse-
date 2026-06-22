@@ -3,7 +3,7 @@ name: Nostale Bot Exe Derleyici
 on:
   push:
     branches: [ "main" ]
-  workflow_dispatch:
+  workflow_dispatch: # İstediğin zaman GitHub paneli üzerinden manuel başlatabilmek için
 
 jobs:
   build:
@@ -25,8 +25,10 @@ jobs:
 
     - name: PyInstaller ile EXE Oluştur
       run: |
-        # --noconsole ekledik çünkü artık arkada siyah konsol ekranına gerek yok, CustomTkinter menümüz var!
-        pyinstaller --onefile --noconsole --add-data "olta_sablonu.png;." --name="Nostale_Balik_Botu" main.py
+        # --onefile: Tek bir exe oluşturur
+        # --noconsole: Arkadaki siyah cmd ekranını gizler, sadece CustomTkinter menüsü açılır
+        # --add-data: Görselleri exe içine gömer (Windows için aralarına ; koyulur)
+        pyinstaller --onefile --noconsole --add-data "olta_sablonu.png;." --add-data "olta_sablonu2.png;." --name="Nostale_Balik_Botu" main.py
 
     - name: Oluşan EXE'yi Artefakt Olarak Yükle
       uses: actions/upload-artifact@v4
