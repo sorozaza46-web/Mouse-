@@ -19,7 +19,6 @@ import win32con
 pydirectinput.FAILSAFE = False
 
 # --- GITHUB FILTRE DETOUR / API ANAHTARI PARÇALAMA ---
-# GitHub botlarının 'gsk_' ile başlayan regex taramalarını atlatmak için anahtarı iki parça halinde tutuyoruz.
 API_PART1 = "gsk_OSP3xnd81eQmgfLDtAwxWGdyb3FYe"
 API_PART2 = "4tMIYM9O6IMZ2eeLxReB1iq"
 COMBINED_API_KEY = API_PART1 + API_PART2
@@ -124,23 +123,23 @@ def hayalet_kare_temizle():
         except:
             pass
 
-# --- GROQ İLK TESPİT MOTORU ---
+# --- GROQ VIZYON İLK TESPİT MOTORU ---
 def groq_ile_ilk_konumu_al(img_bgr, log_callback):
     if groq_client is None: return None
     try:
-        log_callback("[*] Groq Llama 3.3 üzerinden ilk harita konumu alınıyor...")
+        log_callback("[*] Groq Llama v3.2 Vision üzerinden ilk harita konumu alınıyor...")
         _, buffer = cv2.imencode('.jpg', img_bgr)
         base64_image = base64.b64encode(buffer).decode('utf-8')
 
         completion = groq_client.chat.completions.create(
-            model="llama-3.3-70b-specdec",
+            model="llama-3.2-11b-vision-preview", # Güncel ve kararlı vizyon modeli
             messages=[
                 {
                     "role": "user",
                     "content": [
                         {
                             "type": "text",
-                            "text": "Bu oyun ekranındaki balık tutma oltasını/şamandırasını bul ve sadece şu JSON formatında koordinat ver: {'x_min': s, 'y_min': s, 'x_max': s, 'y_max': s}"
+                            "text": "Bu oyun ekranındaki balık tutma oltasını/şamandırasını bul ve sadece şu JSON formatında piksel koordinatlarını ver, başka yazı ekleme: {'x_min': sayı, 'y_min': sayı, 'x_max': sayı, 'y_max': sayı}"
                         },
                         {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
                     ]
@@ -277,7 +276,7 @@ def balik_botu_dongusu(log_callback):
 class BotArayuz(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Nostale Safe-Hybrid Bot v11.2")
+        self.title("Nostale Safe-Hybrid Bot v11.5")
         self.geometry("460x480") 
         self.resizable(False, False)
         ctk.set_appearance_mode("dark")
@@ -323,7 +322,7 @@ class BotArayuz(ctk.CTk):
         keyboard.add_hotkey(baslat_durdur_tusu.lower(), self.tetikleyici)
         
         threading.Thread(target=hayalet_katman_olustur, daemon=True).start()
-        self.log_yaz("[+] API güvenliği sağlandı ve yerel tarayıcılar senkronize edildi.")
+        self.log_yaz("[+] API ve model (v3.2 Vision) güncellendi. Hazır!")
         
     def log_yaz(self, mesaj):
         self.txt_log.insert("end", mesaj + "\n")
@@ -355,4 +354,4 @@ class BotArayuz(ctk.CTk):
 if __name__ == "__main__":
     app = BotArayuz()
     app.mainloop()
-                
+    
