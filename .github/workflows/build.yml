@@ -3,7 +3,7 @@ name: Nostale Bot Exe Derleyici
 on:
   push:
     branches: [ "main" ]
-  workflow_dispatch: # İstediğin zaman GitHub paneli üzerinden manuel başlatabilmek için
+  workflow_dispatch:
 
 jobs:
   build:
@@ -21,14 +21,11 @@ jobs:
     - name: Gerekli Kütüphaneleri Yükle
       run: |
         python -m pip install --upgrade pip
-        pip install pyinstaller ultralytics opencv-python pyautogui mss keyboard customtkinter pywin32
+        pip install pyinstaller ultralytics opencv-python pyautogui mss keyboard customtkinter pywin32 pydirectinput
 
     - name: PyInstaller ile EXE Oluştur
       run: |
-        # --onefile: Tek bir exe oluşturur
-        # --noconsole: Arkadaki siyah cmd ekranını gizler, sadece CustomTkinter menüsü açılır
-        # --add-data: Eğittiğin yapay zeka modelini (.pt) exe içine gömer (Windows için aralarına ; koyulur)
-        pyinstaller --onefile --noconsole --add-data "olta_modeli.pt;." --name="Nostale_Yapay_Zeka_Botu" main.py
+        pyinstaller --onefile --noconsole --add-data "olta_modeli.pt;." --add-data "klasik_olta.png;." --name="Nostale_Yapay_Zeka_Botu" main.py
 
     - name: Oluşan EXE'yi Artefakt Olarak Yükle
       uses: actions/upload-artifact@v4
