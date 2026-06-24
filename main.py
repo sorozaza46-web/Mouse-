@@ -5,15 +5,16 @@ import numpy as np
 import os
 import sys
 import customtkinter as ctk
+import tkinter as tk
 import mss
 from ultralytics import YOLO
 
-# Oyun engelini aşmak için DirectInput ve Windows API kütüphaneleri
+# Sürücü düzeyinde tuş ve Windows API bileşenleri
 import pydirectinput
 import win32gui
 import win32con
+import win32api
 
-# Pydirectinput fail-safe özelliğini kapatıyoruz
 pydirectinput.FAILSAFE = False
 
 # Global Kontroller
@@ -21,13 +22,16 @@ bot_calisiyor = False
 baslat_durdur_tusu = "f6"
 olta_at_tusu = "2"
 balik_cek_tusu = "3"
-secilen_bot_modu = "Otomatik (Yapay Zeka)"
-elle_secilen_alan = None
 hareket_hassasiyeti = 50
 
-# Yapay Zeka Ayarları
+# Katman/Çerçeve Global Değişkenleri
+overlay_pencere = None
+canvas = None
+mevcut_kare_id = None
+
+# Algılama Ayarları
 MODEL_YOLU = "olta_modeli.pt"  
-SABLON_YOLU = "klasik_olta.png" # Klasik olta resmi adı
+SABLON_YOLU = "klasik_olta.png" 
 GUVEN_ESIGI = 0.15             
 
 def kaynak_yolu(goreli_yol):
@@ -37,105 +41,157 @@ def kaynak_yolu(goreli_yol):
         base_path = os.path.abspath(".")
     return os.path.join(base_path, goreli_yol)
 
-# Yapay Zeka Modelini Yüklüyoruz
+# YOLOv8 Yüklemesi
 try:
     model = YOLO(kaynak_yolu(MODEL_YOLU))
     yolo_aktif = True
 except Exception as e:
     yolo_aktif = False
-    print(f"[UYARI] YOLO Modeli yüklenemedi, klasik resim araması kullanılacak: {e}")
 
-# Klasik Olta Resmini Yüklüyoruz (Gri tonlamalı)
-sablon_resim = cv2.imread(kaynak_yolu(SABLON_YOLU), cv2.IMREAD_GRAYSCALE)
-if sablon_resim is None:
-    print(f"[UYARI] {SABLON_YOLU} bulunamadı! Klasik arama modu çalışmayabilir.")
+# ORB Hazırlığı
+orb = cv2.ORB_create(nfeatures=500)
+sablon_bgr = cv2.imread(kaynak_yolu(SABLON_YOLU))
+if sablon_bgr is not None:
+    sablon_gri = cv2.cvtColor(sablon_bgr, cv2.COLOR_BGR2GRAY)
+    kp_sablon, des_sablon = orb.detectAndCompute(sablon_gri, None)
+    bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+else:
+    des_sablon = None
 
 def oyuna_tus_gonder_directx(tus_str):
     try:
-        tus_str = tus_str.lower()
-        pydirectinput.press(tus_str)
+        pydirectinput.press(tus_str.lower())
         time.sleep(0.05)
     except Exception as e:
         print(f"[Tuş Hatası]: {e}")
 
-def ekrana_anlik_kare_ciz(x1, y1, x2, y2):
-    """Ekrana pencereleri engellemeden anlık kırmızı kare çizer."""
-    hdc = win32gui.GetDC(0)
-    renk = win32gui.RGB(255, 0, 0)
-    kalem = win32gui.CreatePen(win32con.PS_SOLID, 3, renk)
-    eski_kalem = win32gui.SelectObject(hdc, kalem)
+# --- HER KOŞULDA ÇİZEN HAYALET KATMAN SİSTEMİ ---
+def hayalet_katman_olustur():
+    global overlay_pencere, canvas
+    overlay_pencere = tk.Tk()
+    overlay_pencere.title("HayaletKare")
     
-    win32gui.MoveToEx(hdc, x1, y1)
-    win32gui.LineTo(hdc, x2, y1)
-    win32gui.LineTo(hdc, x2, y2)
-    win32gui.LineTo(hdc, x1, y2)
-    win32gui.LineTo(hdc, x1, y1)
-        
-    win32gui.SelectObject(hdc, eski_kalem)
-    win32gui.DeleteObject(kalem)
-    win32gui.ReleaseDC(0, hdc)
+    # Ekran boyutlarını al ve pencereyi kapla
+    ekran_w = overlay_pencere.winfo_screenwidth()
+    ekran_h = overlay_pencere.winfo_screenheight()
+    overlay_pencere.geometry(f"{ekran_w}x{ekran_h}+0+0")
+    
+    # Kenarlıkları kaldır, arka planı mor yap (Mor rengi şeffaf ilan edeceğiz)
+    overlay_pencere.overrideredirect(True)
+    overlay_pencere.config(bg="purple")
+    overlay_pencere.attributes("-topmost", True)
+    
+    # Windows API ile mor rengi tamamen şeffaf yap ve tıklamaları arkaya geçir (Click-Through)
+    hwnd = win32gui.GetParent(overlay_pencere.winfo_id())
+    istil = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
+    win32gui.SetWindowLong(hwnd, win32con.GWL_EXSTYLE, istil | win32con.WS_EX_LAYERED | win32con.WS_EX_TRANSPARENT)
+    overlay_pencere.attributes("-transparentcolor", "purple")
+    
+    canvas = tk.Canvas(overlay_pencere, width=ekran_w, height=ekran_h, bg="purple", highlightthickness=0)
+    canvas.pack()
+    overlay_pencere.mainloop()
 
-def ekrandan_elle_bolge_sec_buton(log_callback):
-    global elle_secilen_alan
-    log_callback("[!] Ekran alıntısı aktif! Fare ile olta bölgesini seçin ve ENTER'a basın.")
-    time.sleep(0.5)
-    
-    with mss.mss() as sct:
-        ekran_boyutu = sct.monitors[1]
-        ekran = sct.grab(ekran_boyutu)
-        img = np.array(ekran)
-        img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-    
-    cv2.namedWindow("Olta Bolgesi Secim Ekrani", cv2.WND_PROP_FULLSCREEN)
-    cv2.setWindowProperty("Olta Bolgesi Secim Ekrani", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-    
-    r = cv2.selectROI("Olta Bolgesi Secim Ekrani", img, fromCenter=False, showCrosshair=True)
-    cv2.destroyWindow("Olta Bolgesi Secim Ekrani")
-    
-    if r[2] > 0 and r[3] > 0:
-        sol, ust, genislik, yukseklik = map(int, r)
-        elle_secilen_alan = {"top": ust, "left": sol, "width": genislik, "height": yukseklik}
-        log_callback(f"[+] Manuel bölge kaydedildi! Koordinat: X={sol}, Y={ust}")
-    else:
-        log_callback("[-] Seçim iptal edildi.")
+def hayalet_kare_ciz(x1, y1, x2, y2):
+    """Gelişmiş hayalet katman üzerinde her koşulda en üstte duran kırmızı kare çizer."""
+    global canvas, mevcut_kare_id, overlay_pencere
+    if canvas and overlay_pencere:
+        try:
+            # Önceki kareyi temizle (Ekranda çorba olmasın diye)
+            if mevcut_kare_id:
+                canvas.delete(mevcut_kare_id)
+            # Yeni kareyi çiz (Kırmızı, 3 piksel kalınlıkta)
+            mevcut_kare_id = canvas.create_rectangle(x1, y1, x2, y2, outline="red", width=3)
+            overlay_pencere.update_idletasks()
+            overlay_pencere.update()
+        except:
+            pass
 
-def ekranda_oltayi_hibrit_ara(img):
-    """Önce YOLO ile arar, bulamazsa klasik resim (şablon) ile arayıp koordinat döner."""
-    # 1. Yöntem: Yapay Zeka (YOLOv8)
+def hayalet_kare_temizle():
+    global canvas, mevcut_kare_id
+    if canvas and mevcut_kare_id:
+        try:
+            canvas.delete(mevcut_kare_id)
+            mevcut_kare_id = None
+        except:
+            pass
+
+def ekranda_oltayi_gelismis_ara(img_bgr):
     if yolo_aktif:
-        sonuclar = model.predict(source=img, conf=GUVEN_ESIGI, verbose=False)
+        sonuclar = model.predict(source=img_bgr, conf=GUVEN_ESIGI, verbose=False)
         for sonuc in sonuclar:
             for kutu in sonuc.boxes:
                 x1, y1, x2, y2 = map(int, kutu.xyxy[0].tolist())
-                return {"top": y1 - 5, "left": x1 - 5, "width": (x2 - x1) + 10, "height": (y2 - y1) + 10, "coords": (x1, y1, x2, y2)}
-                
-    # 2. Yöntem: Klasik Resim Eşleştirme (Template Matching)
-    if sablon_resim is not None:
-        gri_ekran = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        res = cv2.matchTemplate(gri_ekran, sablon_resim, cv2.TM_CCOEFF_NORMED)
-        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
-        
-        if max_val > 0.65: # %65 benzerlik eşiği
-            sol, ust = max_loc
-            h, w = sablon_resim.shape
-            x2, y2 = sol + w, ust + h
-            return {"top": ust - 5, "left": sol - 5, "width": w + 10, "height": h + 10, "coords": (sol, ust, x2, y2)}
-            
+                return {"top": y1 - 10, "left": x1 - 10, "width": (x2 - x1) + 20, "height": (y2 - y1) + 20, "coords": (x1, y1, x2, y2)}
+
+    img_gri = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+
+    if des_sablon is not None:
+        kp_sahne, des_sahne = orb.detectAndCompute(img_gri, None)
+        if des_sahne is not None:
+            eslesmeler = bf.match(des_sablon, des_sahne)
+            eslesmeler = sorted(eslesmeler, key=lambda x: x.distance)
+            if len(eslesmeler) > 4:
+                noktalar = [kp_sahne[m.trainIdx].pt for m in eslesmeler[:10]]
+                noktalar = np.array(noktalar)
+                x_min, y_min = np.min(noktalar, axis=0)
+                x_max, y_max = np.max(noktalar, axis=0)
+                if 10 < (x_max - x_min) < 150 and 10 < (y_max - y_min) < 150:
+                    return {
+                        "top": int(y_min) - 15, "left": int(x_min) - 15,
+                        "width": int(x_max - x_min) + 30, "height": int(y_max - y_min) + 30,
+                        "coords": (int(x_min), int(y_min), int(x_max), int(y_max))
+                    }
+
+    parlaklik_filtresi = cv2.threshold(img_gri, 200, 255, cv2.THRESH_BINARY)[1]
+    kenarlar = cv2.Canny(parlaklik_filtresi, 50, 150)
+    cizgiler = cv2.HoughLinesP(kenarlar, 1, np.pi/180, threshold=20, minLineLength=15, maxLineGap=5)
+    
+    if cizgiler is not None:
+        for cizgi in cizgiler:
+            x1, y1, x2, y2 = cizgi[0]
+            if abs(x2 - x1) < abs(y2 - y1) * 2: 
+                return {
+                    "top": min(y1, y2) - 20, "left": min(x1, x2) - 20,
+                    "width": abs(x2 - x1) + 40, "height": abs(y2 - y1) + 40,
+                    "coords": (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
+                }
     return None
 
 def balik_botu_dongusu(log_callback):
     global bot_calisiyor
-    log_callback("[+] Bot Başlatıldı! Lütfen oyuna geçiş yapın.")
-    time.sleep(1.5)
+    log_callback("[+] Ultra Otonom Yıkılmaz Motor Aktif!")
+    time.sleep(1.0)
     
     with mss.mss() as sct:
         ekran_boyutu = sct.monitors[1]
         
         while bot_calisiyor:
+            ilk_ekran_yakala = sct.grab(ekran_boyutu)
+            ref_img = cv2.cvtColor(np.array(ilk_ekran_yakala), cv2.COLOR_BGRA2GRAY)
+            
             log_callback(f"[+] Olta Atılıyor... Tuş: {olta_at_tusu}")
             oyuna_tus_gonder_directx(olta_at_tusu)
             
-            time.sleep(3.8) # Oltanın suya düşme süresi
+            hareket_alani_koordinati = None
+            hareket_baslangic = time.time()
+            
+            while time.time() - hareket_baslangic < 1.8:
+                anlik_ekran = sct.grab(ekran_boyutu)
+                anlik_img = cv2.cvtColor(np.array(anlik_ekran), cv2.COLOR_BGRA2GRAY)
+                fark = cv2.absdiff(ref_img, anlik_img)
+                _, esik_fark = cv2.threshold(fark, 35, 255, cv2.THRESH_BINARY)
+                
+                konturlar, _ = cv2.findContours(esik_fark, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                for kontur in konturlar:
+                    if 30 < cv2.contourArea(kontur) < 600:
+                        x, y, w, h = cv2.boundingRect(kontur)
+                        if 0.2 < (y / ekran_boyutu["height"]) < 0.8:
+                            hareket_alani_koordinati = {"top": y - 40, "left": x - 40, "width": w + 80, "height": h + 80}
+                            break
+                if hareket_alani_koordinati: break
+                time.sleep(0.05)
+
+            time.sleep(2.0)
             if not bot_calisiyor: break
 
             olta_alani = None
@@ -143,71 +199,68 @@ def balik_botu_dongusu(log_callback):
             hareket_bekleme_baslangic = time.time()
             balik_yakalandi = False
 
-            log_callback("[*] Olta aranıyor ve dinamik takibe alınıyor...")
-
-            # 30 saniye boyunca balık vurana kadar döngü
             while bot_calisiyor and (time.time() - hareket_bekleme_baslangic < 30):
-                # Ekranı anlık yakala
                 ekran = sct.grab(ekran_boyutu)
                 img = np.array(ekran)
                 img_bgr = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
 
-                if secilen_bot_modu == "Manuel (Ben Seçeceğim)":
-                    if elle_secilen_alan is None:
-                        log_callback("[-] HATA: Manuel alan seçilmedi!")
-                        bot_calisiyor = False
-                        break
-                    olta_alani = elle_secilen_alan
-                    # Manuel modda da ekrana yeşil/kırmızı sabit kare çizebiliriz
-                    ekrana_anlik_kare_ciz(olta_alani["left"], olta_alani["top"], olta_alani["left"]+olta_alani["width"], olta_alani["top"]+olta_alani["height"])
-                else:
-                    # OTOMATİK MOD: Her an tarar ve bulduğu yeri hep kare içinde tutar
-                    bulunan = ekranda_oltayi_hibrit_ara(img_bgr)
-                    if bulunan:
-                        olta_alani = {"top": bulunan["top"], "left": bulunan["left"], "width": bulunan["width"], "height": bulunan["height"]}
-                        # Kırmızı kareyi ekranda CANLI tutuyoruz
-                        cx1, cy1, cx2, cy2 = bulunan["coords"]
-                        ekrana_anlik_kare_ciz(cx1, cy1, cx2, cy2)
-                    else:
-                        # Eğer o anlık kare kaçtıysa eski alanı koru veya aramaya devam et
-                        pass
+                tarama_alani = img_bgr
+                b_offset_x, b_offset_y = 0, 0
+                if hareket_alani_koordinati:
+                    top, left = hareket_alani_koordinati["top"], hareket_alani_koordinati["left"]
+                    wd, hg = hareket_alani_koordinati["width"], hareket_alani_koordinati["height"]
+                    if top > 0 and left > 0 and (top+hg) < ekran_boyutu["height"] and (left+wd) < ekran_boyutu["width"]:
+                        tarama_alani = img_bgr[top:top+hg, left:left+wd]
+                        b_offset_x, b_offset_y = left, top
 
-                # Eğer bir olta alanı hedeflendiyse pikselsel değişim (hareket) kontrolü yap
-                if olta_alani:
-                    anlik_bölge = sct.grab(olta_alani)
-                    yeni_kare = cv2.cvtColor(np.array(anlik_bölge), cv2.COLOR_BGRA2GRAY)
-
-                    if eski_kare is not None:
-                        fark = cv2.absdiff(eski_kare, yeni_kare)
-                        hareket_miktari = np.sum(fark > 30)
-
-                        if hareket_miktari > hareket_hassasiyeti: 
-                            log_callback(f"[!] BALIK VURDU! Çekiliyor... Tuş: {balik_cek_tusu}")
-                            oyuna_tus_gonder_directx(balik_cek_tusu)
-                            balik_yakalandi = True
-                            time.sleep(3.0) # Çekme animasyonu beklesi
-                            break
-
-                    eski_kare = yeni_kare
+                bulunan = ekranda_oltayi_gelismis_ara(tarama_alani)
                 
-                time.sleep(0.03) # Ultra hızlı tarama döngü gecikmesi
+                if bulunan:
+                    olta_alani = {
+                        "top": bulunan["top"] + b_offset_y, 
+                        "left": bulunan["left"] + b_offset_x, 
+                        "width": bulunan["width"], 
+                        "height": bulunan["height"]
+                    }
+                    cx1, cy1, cx2, cy2 = bulunan["coords"]
+                    # YENİ SİSTEM: Hayalet katmana çiziyoruz (Her koşulda en üstte parlar!)
+                    hayalet_kare_ciz(cx1 + b_offset_x, cy1 + b_offset_y, cx2 + b_offset_x, cy2 + b_offset_y)
+
+                if olta_alani:
+                    try:
+                        anlik_bölge = sct.grab(olta_alani)
+                        yeni_kare = cv2.cvtColor(np.array(anlik_bölge), cv2.COLOR_BGRA2GRAY)
+
+                        if eski_kare is not None:
+                            fark = cv2.absdiff(eski_kare, yeni_kare)
+                            hareket_miktari = np.sum(fark > 30)
+
+                            if hareket_miktari > hareket_hassasiyeti: 
+                                log_callback(f"[!] BALIK VURDU! Çekiliyor...")
+                                oyuna_tus_gonder_directx(balik_cek_tusu)
+                                balik_yakalandi = True
+                                time.sleep(3.0)
+                                break
+                        eski_kare = yeni_kare
+                    except:
+                        pass
+                time.sleep(0.03)
 
             if not balik_yakalandi and bot_calisiyor:
-                log_callback("[-] Süre doldu veya olta kayboldu, tazeleniyor...")
+                log_callback("[-] Olta tazeleniyor...")
             
-            # Ekranı temizlemek için Windows pencere yenileme tetiklemesi
-            win32gui.InvalidateRect(0, None, True)
+            hayalet_kare_temizle()
             time.sleep(1.0)
 
 class BotArayuz(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Nostale Sürekli Çerçeveli Bot v8.5")
-        self.geometry("460x550") 
+        self.title("Nostale Absolute Overlays v9.5")
+        self.geometry("460x480") 
         self.resizable(False, False)
         ctk.set_appearance_mode("dark")
         
-        self.lbl_baslik = ctk.CTkLabel(self, text="Nostale Canlı Takip & Hibrit Balık Botu", font=("Arial", 15, "bold"))
+        self.lbl_baslik = ctk.CTkLabel(self, text="Nostale Her Koşulda Çizen Otonom Bot", font=("Arial", 15, "bold"))
         self.lbl_baslik.pack(pady=12)
         
         self.frame_ayarlar = ctk.CTkFrame(self)
@@ -236,20 +289,9 @@ class BotArayuz(ctk.CTk):
         self.ent_has = ctk.CTkEntry(self.frame_ayarlar, width=120)
         self.ent_has.insert(0, str(hareket_hassasiyeti))
         self.ent_has.grid(row=3, column=1, padx=15, pady=6)
-
-        self.lbl_mod = ctk.CTkLabel(self.frame_ayarlar, text="Çalışma Seçeneği:", font=("Arial", 12, "bold"))
-        self.lbl_mod.grid(row=4, column=0, padx=15, pady=6, sticky="w")
-        self.cmb_mod = ctk.CTkComboBox(self.frame_ayarlar, values=["Otomatik (Yapay Zeka)", "Manuel (Ben Seçeceğim)"], width=160)
-        self.cmb_mod.set(secilen_bot_modu)
-        self.cmb_mod.grid(row=4, column=1, padx=15, pady=6)
-
-        self.lbl_manuel_text = ctk.CTkLabel(self.frame_ayarlar, text="Manuel Alan Ayarı:", font=("Arial", 12))
-        self.lbl_manuel_text.grid(row=5, column=0, padx=15, pady=6, sticky="w")
-        self.btn_elle_sec = ctk.CTkButton(self.frame_ayarlar, text="Olta Bölgesini Elle Seç", fg_color="#2b8a3e", hover_color="#237032", width=140, font=("Arial", 11, "bold"), command=self.elle_secim_tetikle)
-        self.btn_elle_sec.grid(row=5, column=1, padx=15, pady=6)
         
-        self.btn_kaydet = ctk.CTkButton(self, text="Ayarları Kaydet ve Sistemi Aktif Et", font=("Arial", 12, "bold"), command=self.ayarlari_uygula)
-        self.btn_kaydet.pack(pady=10)
+        self.btn_kaydet = ctk.CTkButton(self, text="Ayarları Kaydet ve Botu Hazırla", font=("Arial", 12, "bold"), command=self.ayarlari_uygula)
+        self.btn_kaydet.pack(pady=12)
         
         self.txt_log = ctk.CTkTextbox(self, height=130, width=420, font=("Consolas", 11))
         self.txt_log.pack(pady=5, padx=20)
@@ -257,30 +299,27 @@ class BotArayuz(ctk.CTk):
         import keyboard
         keyboard.unhook_all()
         keyboard.add_hotkey(baslat_durdur_tusu.lower(), self.tetikleyici)
-        self.log_yaz("[*] Sürekli kare çizimi modu aktif. 'klasik_olta.png' resmini koymayı unutmayın.")
+        
+        # Hayalet Katmanı arka planda sonsuz döngüde açıyoruz
+        threading.Thread(target=hayalet_katman_olustur, daemon=True).start()
+        self.log_yaz("[+] Çizim katmanı mor şeffaflıkla kilitlendi. Her modda çizer!")
         
     def log_yaz(self, mesaj):
         self.txt_log.insert("end", mesaj + "\n")
         self.txt_log.see("end")
-        
-    def elle_secim_tetikle(self):
-        threading.Thread(target=ekrandan_elle_bolge_sec_buton, args=(self.log_yaz,), daemon=True).start()
 
     def ayarlari_uygula(self):
-        global baslat_durdur_tusu, olta_at_tusu, balik_cek_tusu, secilen_bot_modu, hareket_hassasiyeti
+        global baslat_durdur_tusu, olta_at_tusu, balik_cek_tusu, hareket_hassasiyeti
         baslat_durdur_tusu = self.ent_bd.get().lower()
         olta_at_tusu = self.ent_olta.get()
         balik_cek_tusu = self.ent_cek.get()
-        secilen_bot_modu = self.cmb_mod.get()
-        try:
-            hareket_hassasiyeti = int(self.ent_has.get())
-        except:
-            hareket_hassasiyeti = 50
+        try: hareket_hassasiyeti = int(self.ent_has.get())
+        except: hareket_hassasiyeti = 50
         
         import keyboard
         keyboard.unhook_all()
         keyboard.add_hotkey(baslat_durdur_tusu, self.tetikleyici)
-        self.log_yaz(f"[+] Ayarlar Kaydedildi! Kısayol: '{baslat_durdur_tusu.upper()}'")
+        self.log_yaz(f"[+] Sistem Katmanı Sıkılaştırıldı! Tuş: '{baslat_durdur_tusu.upper()}'")
 
     def tetikleyici(self):
         global bot_calisiyor
@@ -289,7 +328,7 @@ class BotArayuz(ctk.CTk):
             threading.Thread(target=balik_botu_dongusu, args=(self.log_yaz,), daemon=True).start()
         else:
             bot_calisiyor = False
-            win32gui.InvalidateRect(0, None, True) # Kareyi temizle
+            hayalet_kare_temizle()
             self.log_yaz("[-] Bot durduruldu.")
 
 if __name__ == "__main__":
