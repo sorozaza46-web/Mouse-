@@ -1,44 +1,55 @@
-name: Nova Suite - NosTale Bot Builder
+name: Build Bot C++ EXE (Auto ONNX Export)
 
 on:
   push:
-    branches: [ "main", "master" ]
-  pull_request:
-    branches: [ "main", "master" ]
+    branches: [ "main" ]
   workflow_dispatch:
-
-# Tüm iş akışında geçerli olacak ortam değişkenleri
-env:
-  ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: 'true'
 
 jobs:
   build:
     runs-on: windows-latest
 
     steps:
-    - name: Depoyu Klonla (Checkout)
-      uses: actions/checkout@v4
+    - name: Depoyu Kopyala
+      uses: actions/checkout@v3
 
-    - name: Python Kurulumu
-      uses: actions/setup-python@v5
+    - name: Python Kurulumu (Model Dönüşümü İçin)
+      uses: actions/setup-python@v4
       with:
         python-version: '3.10'
-      env:
-        ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: 'true'
 
-    - name: Gerekli Kütüphaneleri Yükle
+    - name: Ultralytics Yükle ve Modeli ONNX'e Çevir
       run: |
         python -m pip install --upgrade pip
-        pip install pyinstaller opencv-python pyautogui mss keyboard customtkinter pywin32 pydirectinput groq ultralytics
+        pip install ultralytics
+        # best.pt dosyasını otomatik olarak best.onnx formatına ihraç eder
+        python -c "from ultralytics import YOLO; model = YOLO('best.pt'); model.export(format='onnx')"
 
-    - name: Projeyi EXE Olarak Derle (PyInstaller)
+    - name: MSBuild ve vcpkg Kurulumu
+      uses: microsoft/setup-msbuild@v1.1
+
+    - name: C++ Bağımlılıklarını Yükle (OpenCV ve wxWidgets)
       run: |
-        pyinstaller --noconfirm --onefile --windowed --add-data "klasik_olta.png;." --add-data "olta_modeli.pt;." main.py
+        vcpkg integrate install
+        vcpkg install opencv:x64-windows wxwidgets:x64-windows
 
-    - name: Derlenen EXE Dosyasını Kaydet (Artifact)
+    - name: CMake ile Derle
+      run: |
+        mkdir build
+        cd build
+        # vcpkg toolchain dosyasını bağlayarak kütüphaneleri C++ projesine dahil ediyoruz
+        cmake .. -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake
+        cmake --build . --config Release
+
+    - name: ONNX Modeli ve Görselleri Çıktı Klasörüne Kopyala
+      run: |
+        # Çalışabilir dosyanın (EXE) yanına gerekli varlıkları kopyalıyoruz
+        if (Test-Path "best.onnx") { copy "best.onnx" "build/Release/" }
+        if (Test-Path "mantar.png") { copy "mantar.png" "build/Release/" }
+
+    - name: Hazır EXE ve Paket Dosyalarını Paylaş
       uses: actions/upload-artifact@v4
       with:
-        name: Nostale-Hybrid-Bot-EXE
-        path: dist/main.exe
-        retention-days: 5
+        name: FishingBot-CPP-Release
+        path: build/Release/
         
